@@ -395,11 +395,12 @@ function deriveDistricts(modules: FixtureModule[]): District[] {
     { id: 'district:root', path: '', name: 'root', parentId: null, depth: 0 },
   ];
   for (const dir of dirs) {
+    const parentPath = dirname(dir);
     const d: District = {
       id: `district:${dir}`,
       path: dir,
       name: basename(dir),
-      parentId: dir === '' ? null : `district:${dirname(dir)}`,
+      parentId: parentPath === '' ? 'district:root' : `district:${parentPath}`,
       depth: dir.split('/').filter(Boolean).length,
     };
     districts.push(d);
