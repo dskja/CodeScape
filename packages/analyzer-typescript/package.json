@@ -20,11 +20,11 @@
   },
   "dependencies": {
     "@codescape/analyzer-core": "workspace:*",
-    "@codescape/schema": "workspace:*"
+    "@codescape/schema": "workspace:*",
+    "typescript": "^5.5.4"
   },
   "devDependencies": {
     "@types/node": "^20.14.14",
-    "typescript": "^5.5.4",
     "vitest": "^2.0.5"
   }
 }

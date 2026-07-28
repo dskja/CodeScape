@@ -9,7 +9,7 @@ export function Search({ world, layout }: { world: RepositoryWorld; layout: Layo
   const query = useViewerStore((s) => s.searchQuery);
   const setQuery = useViewerStore((s) => s.setSearchQuery);
   const setSelectedId = useViewerStore((s) => s.setSelectedId);
-  const setFocusTarget = useViewerStore((s) => s.setFocusTarget);
+  const triggerFocus = useViewerStore((s) => s.triggerFocus);
   const inputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
 
@@ -28,7 +28,7 @@ export function Search({ world, layout }: { world: RepositoryWorld; layout: Layo
   const handleSelect = (building: Building) => {
     const pos = positions.get(building.id);
     if (pos) {
-      setFocusTarget({
+      triggerFocus({
         x: pos.x + pos.width / 2,
         y: pos.height / 2,
         z: pos.z + pos.depth / 2,

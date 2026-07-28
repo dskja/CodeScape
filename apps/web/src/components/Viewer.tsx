@@ -4,7 +4,7 @@ import { useViewerStore } from '@/store';
 import type { Layout } from '@codescape/layout-engine';
 import type { RepositoryWorld } from '@codescape/schema';
 import dynamic from 'next/dynamic';
-import { Suspense, useCallback } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { Inspector } from './Inspector';
 import { Search } from './Search';
 
@@ -19,10 +19,18 @@ const CityScene = dynamic(
 export function Viewer({ world, layout }: { world: RepositoryWorld; layout: Layout }) {
   const selectedId = useViewerStore((s) => s.selectedId);
   const hoveredId = useViewerStore((s) => s.hoveredId);
-  const focusTarget = useViewerStore((s) => s.focusTarget);
+  const cameraCommand = useViewerStore((s) => s.cameraCommand);
   const setSelectedId = useViewerStore((s) => s.setSelectedId);
   const setHoveredId = useViewerStore((s) => s.setHoveredId);
   const resetView = useViewerStore((s) => s.resetView);
+  const clearCameraCommand = useViewerStore((s) => s.clearCameraCommand);
+  const [testPicking, setTestPicking] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setTestPicking(window.location.search.includes('test-picking=1'));
+    }
+  }, []);
 
   const handleSelect = useCallback(
     (id: string | null) => {
@@ -38,6 +46,17 @@ export function Viewer({ world, layout }: { world: RepositoryWorld; layout: Layo
     [setHoveredId],
   );
 
+  if (world.buildings.length === 0) {
+    return (
+      <div className="viewer">
+        <div data-testid="empty-state" className="empty-state">
+          <h1>CodeScape</h1>
+          <p>This repository contains no supported files to visualize.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="viewer">
       <div className="canvas-container">
@@ -49,9 +68,11 @@ export function Viewer({ world, layout }: { world: RepositoryWorld; layout: Layo
             world={world}
             selectedId={selectedId}
             hoveredId={hoveredId}
-            focusTarget={focusTarget}
+            cameraCommand={cameraCommand}
+            testPicking={testPicking}
             onSelect={handleSelect}
             onHover={handleHover}
+            onAnimationComplete={clearCameraCommand}
           />
         </Suspense>
       </div>

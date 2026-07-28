@@ -1,3 +1,11 @@
+import {
+  deriveDistricts,
+  detectCycles,
+  getLanguage,
+  repositoryBasename,
+  repositoryDirname,
+  repositoryExtension,
+} from '@codescape/analyzer-core';
 import type {
   Building,
   DependencyRoad,
@@ -353,109 +361,18 @@ const rootModules: FixtureModule[] = [
   },
 ];
 
-function dirname(path: string): string {
-  const idx = path.lastIndexOf('/');
-  return idx <= 0 ? '' : path.slice(0, idx);
+function deriveFixtureDistricts(modules: FixtureModule[]): District[] {
+  return deriveDistricts(modules.map((m) => m.path));
 }
 
-function basename(path: string): string {
-  const idx = path.lastIndexOf('/');
-  return idx === -1 ? path : path.slice(idx + 1);
-}
-
-function extension(name: string): string {
-  const idx = name.lastIndexOf('.');
-  return idx === -1 ? '' : name.slice(idx + 1);
-}
-
-function language(ext: string): string {
-  switch (ext) {
-    case 'ts':
-    case 'tsx':
-      return 'typescript';
-    case 'md':
-      return 'markdown';
-    default:
-      return 'text';
-  }
-}
-
-function deriveDistricts(modules: FixtureModule[]): District[] {
-  const dirSet = new Set<string>();
-  for (const m of modules) {
-    let dir = dirname(m.path);
-    while (dir !== '') {
-      dirSet.add(dir);
-      dir = dirname(dir);
-    }
-  }
-  const dirs = Array.from(dirSet).sort();
-  const byPath = new Map<string, District>();
-  const districts: District[] = [
-    { id: 'district:root', path: '', name: 'root', parentId: null, depth: 0 },
-  ];
-  for (const dir of dirs) {
-    const parentPath = dirname(dir);
-    const d: District = {
-      id: `district:${dir}`,
-      path: dir,
-      name: basename(dir),
-      parentId: parentPath === '' ? 'district:root' : `district:${parentPath}`,
-      depth: dir.split('/').filter(Boolean).length,
-    };
-    districts.push(d);
-    byPath.set(dir, d);
-  }
-  return districts;
+function fixtureLanguage(path: string): string {
+  return getLanguage(repositoryExtension(path));
 }
 
 function computeLanguages(buildings: Building[]): string[] {
   const set = new Set<string>();
   for (const b of buildings) set.add(b.language);
   return Array.from(set).sort();
-}
-
-function detectCycles(roads: DependencyRoad[]): string[][] {
-  const graph = new Map<string, Set<string>>();
-  for (const r of roads) {
-    if (!graph.has(r.sourceBuildingId)) graph.set(r.sourceBuildingId, new Set());
-    graph.get(r.sourceBuildingId)?.add(r.targetBuildingId);
-  }
-
-  const visited = new Set<string>();
-  const stack = new Set<string>();
-  const cycles: string[][] = [];
-
-  function dfs(id: string, path: string[]): void {
-    visited.add(id);
-    stack.add(id);
-    path.push(id);
-    for (const next of graph.get(id) ?? []) {
-      if (stack.has(next)) {
-        const cycle = path.slice(path.indexOf(next));
-        cycles.push([...cycle, next]);
-      } else if (!visited.has(next)) {
-        dfs(next, path);
-      }
-    }
-    stack.delete(id);
-    path.pop();
-  }
-
-  for (const id of graph.keys()) {
-    if (!visited.has(id)) dfs(id, []);
-  }
-
-  const seen = new Set<string>();
-  const unique: string[][] = [];
-  for (const c of cycles) {
-    const normalized = [...c].sort().join(',');
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      unique.push(c);
-    }
-  }
-  return unique;
 }
 
 export function buildDemoWorld(name = 'CodeScape Demo'): RepositoryWorld {
@@ -466,22 +383,21 @@ export function buildDemoWorld(name = 'CodeScape Demo'): RepositoryWorld {
     languages: [],
   };
 
-  const districts = deriveDistricts(rootModules);
+  const districts = deriveFixtureDistricts(rootModules);
   const districtByPath = new Map(districts.map((d) => [d.path, d]));
   const buildingByPath = new Map<string, Building>();
 
   for (const mod of rootModules) {
-    const dir = dirname(mod.path);
+    const dir = repositoryDirname(mod.path);
     const district = districtByPath.get(dir);
     if (!district) throw new Error(`Missing district for ${mod.path}`);
-    const ext = extension(mod.path);
     buildingByPath.set(mod.path, {
       id: `building:${mod.path}`,
       districtId: district.id,
       path: mod.path,
-      name: basename(mod.path),
-      extension: ext,
-      language: language(ext),
+      name: repositoryBasename(mod.path),
+      extension: repositoryExtension(mod.path),
+      language: fixtureLanguage(mod.path),
       linesOfCode: mod.linesOfCode,
       bytes: mod.bytes,
       complexity: mod.complexity,

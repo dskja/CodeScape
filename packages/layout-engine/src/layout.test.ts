@@ -112,4 +112,29 @@ describe('computeLayout', () => {
     if (!a || !b) throw new Error('Missing building');
     expect(a.width * a.depth).toBeLessThan(b.width * b.depth);
   });
+
+  it('handles an empty world with finite bounds', () => {
+    const world = createMinimalWorld();
+    world.buildings = [];
+    world.metrics.totalFiles = 0;
+    world.metrics.totalLinesOfCode = 0;
+    const layout = computeLayout(world);
+    expect(layout.buildings).toEqual([]);
+    expect(Number.isFinite(layout.root.width)).toBe(true);
+    expect(Number.isFinite(layout.root.depth)).toBe(true);
+  });
+
+  it('clamps extreme building sizes within finite bounds', () => {
+    const world = createMinimalWorld();
+    const big = world.buildings[1];
+    big.bytes = 1_000_000_000;
+    big.linesOfCode = 1_000_000_000;
+    const layout = computeLayout(world);
+    const bigLayout = layout.buildings.find((b) => b.id === 'building:b');
+    if (!bigLayout) throw new Error('Missing building');
+    expect(Number.isFinite(bigLayout.width)).toBe(true);
+    expect(Number.isFinite(bigLayout.height)).toBe(true);
+    expect(bigLayout.width).toBeLessThanOrEqual(8);
+    expect(bigLayout.height).toBeLessThanOrEqual(20);
+  });
 });

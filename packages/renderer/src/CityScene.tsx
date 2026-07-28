@@ -5,20 +5,35 @@ import { Canvas, type ThreeEvent, useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 
+export interface FocusTarget {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface CameraCommand {
+  type: 'focus' | 'reset';
+  target: FocusTarget | null;
+  id: number;
+}
+
 export interface CitySceneProps {
   layout: Layout;
   world: RepositoryWorld;
   selectedId: string | null;
   hoveredId: string | null;
-  focusTarget: { x: number; y: number; z: number } | null;
+  cameraCommand: CameraCommand | null;
+  testPicking?: boolean;
   onSelect: (id: string | null) => void;
   onHover: (id: string | null) => void;
+  onAnimationComplete?: () => void;
 }
 
-interface OrbitControlsLike {
-  object: { position: THREE.Vector3 };
-  target: THREE.Vector3;
-  update(): void;
+declare global {
+  interface Window {
+    __codescapeSelectBuilding?: (id: string | null) => void;
+    __codescapeWorld?: RepositoryWorld;
+  }
 }
 
 function languageColor(language: string): THREE.Color {
@@ -63,10 +78,28 @@ interface Bounds {
 }
 
 function computeBounds(layout: Layout): Bounds {
-  const minX = Math.min(...layout.buildings.map((b) => b.x));
-  const maxX = Math.max(...layout.buildings.map((b) => b.x + b.width));
-  const minZ = Math.min(...layout.buildings.map((b) => b.z));
-  const maxZ = Math.max(...layout.buildings.map((b) => b.z + b.depth));
+  let minX: number;
+  let maxX: number;
+  let minZ: number;
+  let maxZ: number;
+
+  if (layout.buildings.length > 0) {
+    minX = Math.min(...layout.buildings.map((b) => b.x));
+    maxX = Math.max(...layout.buildings.map((b) => b.x + b.width));
+    minZ = Math.min(...layout.buildings.map((b) => b.z));
+    maxZ = Math.max(...layout.buildings.map((b) => b.z + b.depth));
+  } else if (layout.root) {
+    minX = layout.root.x;
+    maxX = layout.root.x + Math.max(layout.root.width, 10);
+    minZ = layout.root.z;
+    maxZ = layout.root.z + Math.max(layout.root.depth, 10);
+  } else {
+    minX = -5;
+    maxX = 5;
+    minZ = -5;
+    maxZ = 5;
+  }
+
   const width = maxX - minX;
   const depth = maxZ - minZ;
   return {
@@ -76,15 +109,31 @@ function computeBounds(layout: Layout): Bounds {
   };
 }
 
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3;
+}
+
+interface OrbitControlsLike {
+  object: THREE.PerspectiveCamera;
+  target: THREE.Vector3;
+  addEventListener(type: 'start', listener: () => void): void;
+  removeEventListener(type: 'start', listener: () => void): void;
+  update(): void;
+}
+
 function CameraRig({
-  focusTarget,
+  cameraCommand,
   bounds,
+  onAnimationComplete,
 }: {
-  focusTarget: { x: number; y: number; z: number } | null;
+  cameraCommand: CameraCommand | null;
   bounds: Bounds;
+  onAnimationComplete: () => void;
 }) {
-  const controls = useThree((state) => state.controls);
+  const controls = useThree((state) => state.controls) as unknown as OrbitControlsLike | undefined;
+  const camera = useThree((state) => state.camera);
   const reduced = useReducedMotion();
+
   const defaultPosition = useMemo(
     () =>
       new THREE.Vector3(
@@ -98,26 +147,95 @@ function CameraRig({
     () => new THREE.Vector3(bounds.centerX, 0, bounds.centerZ),
     [bounds],
   );
-  const targetPosition = useMemo(() => {
-    if (focusTarget) {
-      return new THREE.Vector3(focusTarget.x + 12, focusTarget.y + 12, focusTarget.z + 12);
+
+  const modeRef = useRef<'idle' | 'focus' | 'reset' | 'user'>('idle');
+  const progressRef = useRef(0);
+  const startPosition = useRef(new THREE.Vector3());
+  const startTarget = useRef(new THREE.Vector3());
+  const endPosition = useRef(new THREE.Vector3());
+  const endTarget = useRef(new THREE.Vector3());
+
+  useEffect(() => {
+    if (!controls) return;
+    const handler = () => {
+      if (modeRef.current !== 'user') {
+        modeRef.current = 'user';
+        onAnimationComplete();
+      }
+    };
+    controls.addEventListener('start', handler);
+    return () => controls.removeEventListener('start', handler);
+  }, [controls, onAnimationComplete]);
+
+  useEffect(() => {
+    if (!cameraCommand) return;
+    if (reduced) {
+      if (cameraCommand.type === 'focus' && cameraCommand.target) {
+        camera.position.set(
+          cameraCommand.target.x + 12,
+          cameraCommand.target.y + 12,
+          cameraCommand.target.z + 12,
+        );
+        controls?.target.set(
+          cameraCommand.target.x,
+          cameraCommand.target.y,
+          cameraCommand.target.z,
+        );
+      } else {
+        camera.position.copy(defaultPosition);
+        controls?.target.copy(defaultTarget);
+      }
+      controls?.update();
+      onAnimationComplete();
+      return;
     }
-    return defaultPosition.clone();
-  }, [focusTarget, defaultPosition]);
-  const targetLookAt = useMemo(() => {
-    if (focusTarget) {
-      return new THREE.Vector3(focusTarget.x, focusTarget.y, focusTarget.z);
+
+    startPosition.current.copy(camera.position);
+    startTarget.current.copy(
+      controls?.target ?? new THREE.Vector3(bounds.centerX, 0, bounds.centerZ),
+    );
+
+    if (cameraCommand.type === 'focus' && cameraCommand.target) {
+      endPosition.current.set(
+        cameraCommand.target.x + 12,
+        cameraCommand.target.y + 12,
+        cameraCommand.target.z + 12,
+      );
+      endTarget.current.set(cameraCommand.target.x, cameraCommand.target.y, cameraCommand.target.z);
+      modeRef.current = 'focus';
+    } else {
+      endPosition.current.copy(defaultPosition);
+      endTarget.current.copy(defaultTarget);
+      modeRef.current = 'reset';
     }
-    return defaultTarget.clone();
-  }, [focusTarget, defaultTarget]);
+    progressRef.current = 0;
+  }, [
+    cameraCommand,
+    camera,
+    controls,
+    reduced,
+    defaultPosition,
+    defaultTarget,
+    bounds,
+    onAnimationComplete,
+  ]);
 
   useFrame((_, delta) => {
     if (!controls) return;
-    const oc = controls as unknown as OrbitControlsLike;
-    const speed = reduced ? 1 : Math.min(delta * 4, 1);
-    oc.object.position.lerp(targetPosition, speed);
-    oc.target.lerp(targetLookAt, speed);
-    oc.update();
+    const mode = modeRef.current;
+    if (mode !== 'focus' && mode !== 'reset') return;
+
+    progressRef.current = Math.min(1, progressRef.current + delta * 2.5);
+    const t = easeOutCubic(progressRef.current);
+
+    camera.position.lerpVectors(startPosition.current, endPosition.current, t);
+    controls.target.lerpVectors(startTarget.current, endTarget.current, t);
+    controls.update();
+
+    if (progressRef.current >= 1) {
+      modeRef.current = 'idle';
+      onAnimationComplete();
+    }
   });
 
   return <OrbitControls makeDefault enableDamping />;
@@ -143,6 +261,13 @@ function BuildingInstances({
     [],
   );
   const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -201,6 +326,13 @@ function DistrictPlanes({ districts }: { districts: DistrictLayout[] }) {
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
   useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
+
+  useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
     for (let i = 0; i < districts.length; i++) {
@@ -247,6 +379,12 @@ function Roads({ layout, world }: { layout: Layout; world: RepositoryWorld }) {
     return geo;
   }, [points]);
 
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+    };
+  }, [geometry]);
+
   return (
     <lineSegments geometry={geometry}>
       <lineBasicMaterial color={0xaaaaaa} transparent opacity={0.4} />
@@ -269,12 +407,25 @@ export function CityScene({
   world,
   selectedId,
   hoveredId,
-  focusTarget,
+  cameraCommand,
+  testPicking = false,
   onSelect,
   onHover,
+  onAnimationComplete,
 }: CitySceneProps) {
   const bounds = useMemo(() => computeBounds(layout), [layout]);
   const visible = usePageVisible();
+
+  // Test-only deterministic picking helper.
+  useEffect(() => {
+    if (!testPicking) return;
+    window.__codescapeSelectBuilding = onSelect;
+    window.__codescapeWorld = world;
+    return () => {
+      window.__codescapeSelectBuilding = undefined;
+      window.__codescapeWorld = undefined;
+    };
+  }, [testPicking, onSelect, world]);
 
   return (
     <div data-testid="city-canvas" style={{ width: '100%', height: '100%' }}>
@@ -304,7 +455,11 @@ export function CityScene({
           onHover={onHover}
         />
         <Roads layout={layout} world={world} />
-        <CameraRig focusTarget={focusTarget} bounds={bounds} />
+        <CameraRig
+          cameraCommand={cameraCommand}
+          bounds={bounds}
+          onAnimationComplete={onAnimationComplete ?? (() => {})}
+        />
       </Canvas>
     </div>
   );

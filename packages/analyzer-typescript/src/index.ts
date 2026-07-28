@@ -5,6 +5,6 @@ export * from './scanner.js';
 
 export const typeScriptAnalyzer: Analyzer = {
   analyze(options: AnalyzerOptions) {
-    return analyzeTypeScriptDirectory(options.rootPath);
+    return analyzeTypeScriptDirectory(options.rootPath, options);
   },
 };
