@@ -1,0 +1,317 @@
+# Instincts generated from https://github.com/dskja/CodeScape
+# Generated: 2026-07-28T10:32:42.287Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: CodeScape-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/dskja/CodeScape
+---
+
+# CodeScape Commit Length
+
+## Action
+
+Write moderate-length commit messages (~69 characters)
+
+## Evidence
+
+- Average commit message length: 69 chars
+- Based on 1 commits
+
+---
+id: CodeScape-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/dskja/CodeScape
+---
+
+# CodeScape Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: CodeScape-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/dskja/CodeScape
+---
+
+# CodeScape Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: CodeScape-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/dskja/CodeScape
+---
+
+# CodeScape Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: 
+
+---
+id: codescape-instinct-file-naming-camelcase
+trigger: "When creating a new file in the repository"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct File Naming Camelcase
+
+## Action
+
+Name the file using camelCase convention
+
+## Evidence
+
+- Pattern in namingConventions.files: camelCase
+
+---
+id: codescape-instinct-function-naming-camelcase
+trigger: "When defining a new function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Function Naming Camelcase
+
+## Action
+
+Name the function using camelCase convention
+
+## Evidence
+
+- Pattern in namingConventions.functions: camelCase
+
+---
+id: codescape-instinct-class-naming-pascalcase
+trigger: "When defining a new class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Class Naming Pascalcase
+
+## Action
+
+Name the class using PascalCase convention
+
+## Evidence
+
+- Pattern in namingConventions.classes: PascalCase
+
+---
+id: codescape-instinct-constant-naming-screaming-snake-case
+trigger: "When defining a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Constant Naming Screaming Snake Case
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE convention
+
+## Evidence
+
+- Pattern in namingConventions.constants: SCREAMING_SNAKE_CASE
+
+---
+id: codescape-instinct-import-style-mixed
+trigger: "When importing modules"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Import Style Mixed
+
+## Action
+
+Use a mixed import style (both default and named imports as appropriate)
+
+## Evidence
+
+- Pattern in importStyle: mixed
+
+---
+id: codescape-instinct-export-style-named
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Export Style Named
+
+## Action
+
+Prefer named exports over default exports
+
+## Evidence
+
+- Pattern in exportStyle: named
+
+---
+id: codescape-instinct-test-location-mixed
+trigger: "When adding new tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Test Location Mixed
+
+## Action
+
+Place test files in both source and dedicated test directories as appropriate
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation: mixed
+
+---
+id: codescape-instinct-test-framework-vitest-playwright
+trigger: "When writing tests for web app"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Test Framework Vitest Playwright
+
+## Action
+
+Use Vitest for unit tests and Playwright for end-to-end tests
+
+## Evidence
+
+- Presence of apps/web/vitest.config.ts
+- Presence of apps/web/playwright.config.ts
+
+---
+id: codescape-instinct-commit-message-freeform
+trigger: "When writing a commit message"
+confidence: 0.8
+domain: git
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Commit Message Freeform
+
+## Action
+
+Use a freeform commit message without a strict prefix, focusing on clarity
+
+## Evidence
+
+- Pattern in commits.type: freeform
+- Example: 'Implement CodeScape technical foundation and first vertical prototype'
+
+---
+id: codescape-instinct-commit-length-moderate
+trigger: "When composing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Commit Length Moderate
+
+## Action
+
+Keep the commit message concise but descriptive, around 60-70 characters
+
+## Evidence
+
+- Pattern in commits.averageLength: 69
+
+---
+id: codescape-instinct-turborepo-structure
+trigger: "When adding new packages or apps"
+confidence: 0.9
+domain: architecture
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Turborepo Structure
+
+## Action
+
+Place them under 'packages' or 'apps' directories following Turborepo conventions
+
+## Evidence
+
+- Pattern in architecture.folderStructure.type: turborepo
+- Common folders: packages, apps
+
+---
+id: codescape-instinct-config-file-location
+trigger: "When adding or modifying configuration files"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: dskja/CodeScape
+---
+
+# Codescape Instinct Config File Location
+
+## Action
+
+Place config files at the root or within the relevant app/package directory
+
+## Evidence
+
+- Pattern in architecture.configFiles
+
