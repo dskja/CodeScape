@@ -84,7 +84,7 @@ function printHelp(): void {
 
 Commands:
   analyze <path>    Analyze a TypeScript/JavaScript repository and print RepositoryWorld JSON.
-  validate <file>  Validate a RepositoryWorld JSON file.
+  validate <file>   Validate a RepositoryWorld JSON file.
   help              Show this message.
 
 Analyze options:
@@ -94,18 +94,24 @@ Analyze options:
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const rawArgs = process.argv.slice(2);
+  if (
+    rawArgs.length === 0 ||
+    rawArgs[0] === 'help' ||
+    rawArgs[0] === '--help' ||
+    rawArgs[0] === '-h'
+  ) {
+    printHelp();
+    return;
+  }
+
+  const args = parseArgs(rawArgs);
   switch (args.command) {
     case 'analyze':
       await analyzeCommand(args);
       break;
     case 'validate':
       await validateCommand(args.positional);
-      break;
-    case 'help':
-    case '--help':
-    case '-h':
-      printHelp();
       break;
     default:
       printHelp();

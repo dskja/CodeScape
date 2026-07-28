@@ -50,6 +50,10 @@ test.describe('CodeScape viewer', () => {
 
     const canvas = page.getByTestId('city-canvas');
     await canvas.waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForFunction(
+      () => window.__codescapeWorld !== undefined && window.__codescapeSelectBuilding !== undefined,
+      { timeout: 5000 },
+    );
 
     const world = await page.evaluate(() => window.__codescapeWorld);
     if (!world || world.buildings.length === 0) {

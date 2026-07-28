@@ -33,12 +33,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
       const value = argv[++i];
       if (value === undefined) throw new Error(`Missing value for ${arg}`);
       result.output = value;
-    } else if (arg.startsWith('--')) {
+    } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option: ${arg}`);
     } else {
       positionalArgs.push(arg);
     }
     i++;
+  }
+
+  if (positionalArgs.length > 2) {
+    throw new Error(`Too many positional arguments: ${positionalArgs.join(' ')}`);
   }
 
   result.command = positionalArgs[0] ?? '';

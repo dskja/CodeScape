@@ -23,7 +23,21 @@ describe('parseArgs', () => {
     expect(args.output).toBe('.codescape/world.json');
   });
 
-  it('throws on unknown options', () => {
-    expect(() => parseArgs(['analyze', '.', '--unknown'])).toThrow();
+  it('throws on unknown long options', () => {
+    expect(() => parseArgs(['analyze', '.', '--unknown'])).toThrow('Unknown option: --unknown');
+  });
+
+  it('throws on unknown short options', () => {
+    expect(() => parseArgs(['analyze', '.', '-u'])).toThrow('Unknown option: -u');
+  });
+
+  it('throws on too many positional arguments', () => {
+    expect(() => parseArgs(['analyze', '.', 'extra'])).toThrow('Too many positional arguments');
+  });
+
+  it('throws on missing option values', () => {
+    expect(() => parseArgs(['analyze', '.', '--extension'])).toThrow(
+      'Missing value for --extension',
+    );
   });
 });

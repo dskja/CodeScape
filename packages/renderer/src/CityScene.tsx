@@ -4,6 +4,17 @@ import { OrbitControls } from '@react-three/drei';
 import { Canvas, type ThreeEvent, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import {
+  type Bounds,
+  type CameraState,
+  type Point3,
+  advanceCameraState,
+  cancelByUser,
+  computeDefaultPosition,
+  computeDefaultTarget,
+  createCameraState,
+  startCommand,
+} from './cameraState.js';
 
 export interface FocusTarget {
   x: number;
@@ -27,6 +38,16 @@ export interface CitySceneProps {
   onSelect: (id: string | null) => void;
   onHover: (id: string | null) => void;
   onAnimationComplete?: () => void;
+}
+
+export interface CitySceneContentProps {
+  layout: Layout;
+  world: RepositoryWorld;
+  selectedId: string | null;
+  hoveredId: string | null;
+  testPicking?: boolean;
+  onSelect: (id: string | null) => void;
+  onHover: (id: string | null) => void;
 }
 
 declare global {
@@ -71,12 +92,6 @@ function usePageVisible(): boolean {
   return visible;
 }
 
-interface Bounds {
-  centerX: number;
-  centerZ: number;
-  maxDimension: number;
-}
-
 function computeBounds(layout: Layout): Bounds {
   let minX: number;
   let maxX: number;
@@ -109,8 +124,8 @@ function computeBounds(layout: Layout): Bounds {
   };
 }
 
-function easeOutCubic(t: number): number {
-  return 1 - (1 - t) ** 3;
+function copyToVector(target: THREE.Vector3, point: Point3): void {
+  target.set(point.x, point.y, point.z);
 }
 
 interface OrbitControlsLike {
@@ -134,34 +149,27 @@ function CameraRig({
   const camera = useThree((state) => state.camera);
   const reduced = useReducedMotion();
 
-  const defaultPosition = useMemo(
-    () =>
-      new THREE.Vector3(
-        bounds.centerX + bounds.maxDimension,
-        bounds.maxDimension,
-        bounds.centerZ + bounds.maxDimension,
-      ),
-    [bounds],
-  );
-  const defaultTarget = useMemo(
-    () => new THREE.Vector3(bounds.centerX, 0, bounds.centerZ),
-    [bounds],
-  );
+  const defaultPosition = useMemo(() => computeDefaultPosition(bounds), [bounds]);
+  const defaultTarget = useMemo(() => computeDefaultTarget(bounds), [bounds]);
 
-  const modeRef = useRef<'idle' | 'focus' | 'reset' | 'user'>('idle');
-  const progressRef = useRef(0);
-  const startPosition = useRef(new THREE.Vector3());
-  const startTarget = useRef(new THREE.Vector3());
-  const endPosition = useRef(new THREE.Vector3());
-  const endTarget = useRef(new THREE.Vector3());
+  const cameraState = useRef<CameraState>(createCameraState(defaultPosition, defaultTarget));
+
+  // Sync the plain state with the actual camera position on first mount.
+  useEffect(() => {
+    const state = cameraState.current;
+    state.position = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+    state.target = {
+      x: controls?.target.x ?? 0,
+      y: controls?.target.y ?? 0,
+      z: controls?.target.z ?? 0,
+    };
+  }, [camera, controls]);
 
   useEffect(() => {
     if (!controls) return;
     const handler = () => {
-      if (modeRef.current !== 'user') {
-        modeRef.current = 'user';
-        onAnimationComplete();
-      }
+      cancelByUser(cameraState.current);
+      onAnimationComplete();
     };
     controls.addEventListener('start', handler);
     return () => controls.removeEventListener('start', handler);
@@ -169,46 +177,35 @@ function CameraRig({
 
   useEffect(() => {
     if (!cameraCommand) return;
-    if (reduced) {
-      if (cameraCommand.type === 'focus' && cameraCommand.target) {
-        camera.position.set(
-          cameraCommand.target.x + 12,
-          cameraCommand.target.y + 12,
-          cameraCommand.target.z + 12,
-        );
-        controls?.target.set(
-          cameraCommand.target.x,
-          cameraCommand.target.y,
-          cameraCommand.target.z,
-        );
-      } else {
-        camera.position.copy(defaultPosition);
-        controls?.target.copy(defaultTarget);
-      }
+    const completed = startCommand(
+      cameraState.current,
+      cameraCommand,
+      defaultPosition,
+      defaultTarget,
+      reduced,
+    );
+    if (completed) {
+      copyToVector(camera.position, cameraState.current.position);
+      controls?.target.set(
+        cameraState.current.target.x,
+        cameraState.current.target.y,
+        cameraState.current.target.z,
+      );
       controls?.update();
       onAnimationComplete();
       return;
     }
 
-    startPosition.current.copy(camera.position);
-    startTarget.current.copy(
-      controls?.target ?? new THREE.Vector3(bounds.centerX, 0, bounds.centerZ),
-    );
-
-    if (cameraCommand.type === 'focus' && cameraCommand.target) {
-      endPosition.current.set(
-        cameraCommand.target.x + 12,
-        cameraCommand.target.y + 12,
-        cameraCommand.target.z + 12,
-      );
-      endTarget.current.set(cameraCommand.target.x, cameraCommand.target.y, cameraCommand.target.z);
-      modeRef.current = 'focus';
-    } else {
-      endPosition.current.copy(defaultPosition);
-      endTarget.current.copy(defaultTarget);
-      modeRef.current = 'reset';
-    }
-    progressRef.current = 0;
+    cameraState.current.startPosition = {
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+    };
+    cameraState.current.startTarget = {
+      x: controls?.target.x ?? defaultTarget.x,
+      y: controls?.target.y ?? defaultTarget.y,
+      z: controls?.target.z ?? defaultTarget.z,
+    };
   }, [
     cameraCommand,
     camera,
@@ -216,24 +213,18 @@ function CameraRig({
     reduced,
     defaultPosition,
     defaultTarget,
-    bounds,
     onAnimationComplete,
   ]);
 
   useFrame((_, delta) => {
     if (!controls) return;
-    const mode = modeRef.current;
-    if (mode !== 'focus' && mode !== 'reset') return;
-
-    progressRef.current = Math.min(1, progressRef.current + delta * 2.5);
-    const t = easeOutCubic(progressRef.current);
-
-    camera.position.lerpVectors(startPosition.current, endPosition.current, t);
-    controls.target.lerpVectors(startTarget.current, endTarget.current, t);
-    controls.update();
-
-    if (progressRef.current >= 1) {
-      modeRef.current = 'idle';
+    const completed = advanceCameraState(cameraState.current, delta);
+    if (cameraState.current.mode === 'focus' || cameraState.current.mode === 'reset') {
+      copyToVector(camera.position, cameraState.current.position);
+      copyToVector(controls.target, cameraState.current.target);
+      controls.update();
+    }
+    if (completed) {
       onAnimationComplete();
     }
   });
@@ -402,6 +393,42 @@ function GroundPlane({ onSelect }: { onSelect: (id: string | null) => void }) {
   );
 }
 
+export function CitySceneContent({
+  layout,
+  world,
+  selectedId,
+  hoveredId,
+  testPicking = false,
+  onSelect,
+  onHover,
+}: CitySceneContentProps) {
+  // Test-only deterministic picking helper.
+  useEffect(() => {
+    if (!testPicking) return undefined;
+    window.__codescapeSelectBuilding = onSelect;
+    window.__codescapeWorld = world;
+    return () => {
+      window.__codescapeSelectBuilding = undefined;
+      window.__codescapeWorld = undefined;
+    };
+  }, [testPicking, onSelect, world]);
+
+  return (
+    <group>
+      <GroundPlane onSelect={onSelect} />
+      <DistrictPlanes districts={layout.districts} />
+      <BuildingInstances
+        buildings={layout.buildings}
+        selectedId={selectedId}
+        hoveredId={hoveredId}
+        onSelect={onSelect}
+        onHover={onHover}
+      />
+      <Roads layout={layout} world={world} />
+    </group>
+  );
+}
+
 export function CityScene({
   layout,
   world,
@@ -415,17 +442,6 @@ export function CityScene({
 }: CitySceneProps) {
   const bounds = useMemo(() => computeBounds(layout), [layout]);
   const visible = usePageVisible();
-
-  // Test-only deterministic picking helper.
-  useEffect(() => {
-    if (!testPicking) return;
-    window.__codescapeSelectBuilding = onSelect;
-    window.__codescapeWorld = world;
-    return () => {
-      window.__codescapeSelectBuilding = undefined;
-      window.__codescapeWorld = undefined;
-    };
-  }, [testPicking, onSelect, world]);
 
   return (
     <div data-testid="city-canvas" style={{ width: '100%', height: '100%' }}>
@@ -445,16 +461,15 @@ export function CityScene({
         <color attach="background" args={[0x111827]} />
         <ambientLight intensity={0.6} />
         <directionalLight position={[20, 40, 20]} intensity={1} />
-        <GroundPlane onSelect={onSelect} />
-        <DistrictPlanes districts={layout.districts} />
-        <BuildingInstances
-          buildings={layout.buildings}
+        <CitySceneContent
+          layout={layout}
+          world={world}
           selectedId={selectedId}
           hoveredId={hoveredId}
+          testPicking={testPicking}
           onSelect={onSelect}
           onHover={onHover}
         />
-        <Roads layout={layout} world={world} />
         <CameraRig
           cameraCommand={cameraCommand}
           bounds={bounds}

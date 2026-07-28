@@ -42,6 +42,10 @@ function validWorld(): RepositoryWorld {
   };
 }
 
+function cloneWorld(world: RepositoryWorld): RepositoryWorld {
+  return JSON.parse(JSON.stringify(world)) as RepositoryWorld;
+}
+
 describe('validateRepositoryWorld', () => {
   it('accepts a valid world', () => {
     const result = validateRepositoryWorld(validWorld());
@@ -90,5 +94,102 @@ describe('validateRepositoryWorld', () => {
     const result = validateRepositoryWorld(world);
     expect(result.success).toBe(false);
     expect(result.errors.some((e) => e.includes('self-reference'))).toBe(true);
+  });
+
+  it('rejects district parent cycles', () => {
+    const world = cloneWorld(validWorld());
+    world.districts.push({
+      id: 'district:loop',
+      path: 'loop',
+      name: 'loop',
+      parentId: 'district:src',
+      depth: 2,
+    });
+    world.districts[1].parentId = 'district:loop';
+    const result = validateRepositoryWorld(world);
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.includes('District parent cycle'))).toBe(true);
+  });
+
+  it('rejects districts not reachable from the root', () => {
+    const world = cloneWorld(validWorld());
+    world.districts.push({
+      id: 'district:orphan',
+      path: 'orphan',
+      name: 'orphan',
+      parentId: 'district:missing',
+      depth: 1,
+    });
+    const result = validateRepositoryWorld(world);
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.includes('not reachable from the root'))).toBe(true);
+  });
+
+  it('rejects circular dependency groups that are not connected by roads', () => {
+    const world = cloneWorld(validWorld());
+    world.buildings.push({
+      ...world.buildings[0],
+      id: 'building:src/other.ts',
+      path: 'src/other.ts',
+      name: 'other.ts',
+    });
+    world.metrics.circularDependencyGroups = [
+      ['building:src/index.ts', 'building:src/other.ts', 'building:src/index.ts'],
+    ];
+    const result = validateRepositoryWorld(world);
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.includes('missing road'))).toBe(true);
+  });
+
+  it('rejects duplicate road relationships', () => {
+    const world = cloneWorld(validWorld());
+    world.buildings.push({
+      ...world.buildings[0],
+      id: 'building:src/other.ts',
+      path: 'src/other.ts',
+      name: 'other.ts',
+    });
+    world.roads.push(
+      {
+        id: 'road:1',
+        sourceBuildingId: 'building:src/index.ts',
+        targetBuildingId: 'building:src/other.ts',
+        kind: 'static-import',
+        weight: 1,
+      },
+      {
+        id: 'road:2',
+        sourceBuildingId: 'building:src/index.ts',
+        targetBuildingId: 'building:src/other.ts',
+        kind: 'static-import',
+        weight: 1,
+      },
+    );
+    const result = validateRepositoryWorld(world);
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.includes('Duplicate road relationship'))).toBe(true);
+  });
+
+  it('rejects mismatched import and importedBy counts', () => {
+    const world = cloneWorld(validWorld());
+    world.buildings.push({
+      ...world.buildings[0],
+      id: 'building:src/other.ts',
+      path: 'src/other.ts',
+      name: 'other.ts',
+      importedByCount: 0,
+    });
+    world.roads.push({
+      id: 'road:1',
+      sourceBuildingId: 'building:src/index.ts',
+      targetBuildingId: 'building:src/other.ts',
+      kind: 'static-import',
+      weight: 1,
+    });
+    const result = validateRepositoryWorld(world);
+    expect(result.success).toBe(false);
+    expect(
+      result.errors.some((e) => e.includes('importCount') || e.includes('importedByCount')),
+    ).toBe(true);
   });
 });

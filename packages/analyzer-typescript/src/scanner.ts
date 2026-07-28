@@ -1,5 +1,5 @@
-import type { Dirent } from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import type { Dirent, Stats } from 'node:fs';
+import { constants, access, readFile, readdir, stat } from 'node:fs/promises';
 import {
   join,
   basename as pathBasename,
@@ -31,6 +31,7 @@ import * as ts from 'typescript';
 const DEFAULT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'out', 'coverage']);
 const SUPPORTED_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 interface ParsedFile {
   absolutePath: string;
@@ -161,18 +162,49 @@ function resolveImportPath(
   return null;
 }
 
+async function validateRootPath(resolvedRoot: string): Promise<void> {
+  let stats: Stats;
+  try {
+    stats = await stat(resolvedRoot);
+  } catch {
+    throw new Error(`Root path does not exist or is not readable: ${resolvedRoot}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Root path is not a directory: ${resolvedRoot}`);
+  }
+  try {
+    await access(resolvedRoot, constants.R_OK | constants.X_OK);
+  } catch {
+    throw new Error(`Root path is not readable: ${resolvedRoot}`);
+  }
+}
+
 async function tryReadText(
   absolutePath: string,
 ): Promise<{ content: string; bytes: number; mtime: Date } | null> {
+  let stats: Stats;
   try {
-    const [stats, content] = await Promise.all([
-      stat(absolutePath),
-      readFile(absolutePath, 'utf-8'),
-    ]);
+    stats = await stat(absolutePath);
+  } catch {
+    return null;
+  }
+  if (!stats.isFile()) {
+    return null;
+  }
+
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(absolutePath);
+  } catch {
+    return null;
+  }
+
+  try {
+    const content = TEXT_DECODER.decode(buffer);
     if (content.includes('\u0000')) {
       return null;
     }
-    return { content, bytes: stats.size, mtime: stats.mtime };
+    return { content, bytes: buffer.length, mtime: stats.mtime };
   } catch {
     return null;
   }
@@ -187,6 +219,17 @@ async function scanDirectory(
   try {
     entries = await readdir(current, { withFileTypes: true });
   } catch {
+    if (current !== rootPath) {
+      return {
+        files: [],
+        skippedFiles: [
+          {
+            path: toInternalPath(current, rootPath),
+            reason: 'directory not readable',
+          },
+        ],
+      };
+    }
     return { files: [], skippedFiles: [] };
   }
 
@@ -206,13 +249,14 @@ async function scanDirectory(
       files.push(...sub.files);
       skippedFiles.push(...sub.skippedFiles);
     } else if (entry.isFile()) {
+      if (excludeSet.has(entry.name)) continue;
       const ext = pathExtname(entry.name);
       if (!allowedExtensions.has(ext)) continue;
       const readResult = await tryReadText(childPath);
       if (!readResult) {
         skippedFiles.push({
           path: toInternalPath(childPath, rootPath),
-          reason: 'not a readable UTF-8 text file',
+          reason: 'binary or invalid UTF-8 file',
         });
         continue;
       }
@@ -236,11 +280,70 @@ async function scanDirectory(
   return { files, skippedFiles };
 }
 
+function buildRoads(
+  files: ParsedFile[],
+  buildingByPath: Map<string, Building>,
+  filesByPath: Map<string, ParsedFile>,
+): {
+  roads: DependencyRoad[];
+  unresolvedImports: Array<{ sourcePath: string; specifier: string; kind: string }>;
+} {
+  const roadMap = new Map<
+    string,
+    { source: Building; target: Building; kind: RoadKind; weight: number }
+  >();
+  const unresolvedImports: Array<{ sourcePath: string; specifier: string; kind: string }> = [];
+
+  for (const file of files) {
+    const source = buildingByPath.get(file.relativePath);
+    if (!source) continue;
+    for (const imp of file.imports) {
+      const resolved = resolveImportPath(file.relativePath, imp.specifier, filesByPath);
+      if (!resolved) {
+        if (isRelativeOrAbsolute(imp.specifier)) {
+          unresolvedImports.push({
+            sourcePath: file.relativePath,
+            specifier: imp.specifier,
+            kind: imp.kind,
+          });
+        }
+        continue;
+      }
+      const target = buildingByPath.get(resolved);
+      if (!target) continue;
+      const key = `${source.id}|${target.id}|${imp.kind}`;
+      const existing = roadMap.get(key);
+      if (existing) {
+        existing.weight += imp.weight;
+      } else {
+        roadMap.set(key, { source, target, kind: imp.kind, weight: imp.weight });
+      }
+    }
+  }
+
+  const roads: DependencyRoad[] = [];
+  for (const entry of roadMap.values()) {
+    roads.push({
+      id: `road:${entry.source.id}->${entry.target.id}:${entry.kind}`,
+      sourceBuildingId: entry.source.id,
+      targetBuildingId: entry.target.id,
+      kind: entry.kind,
+      weight: entry.weight,
+    });
+    entry.source.importCount += 1;
+    entry.target.importedByCount += 1;
+  }
+
+  return { roads, unresolvedImports };
+}
+
 export async function analyzeTypeScriptDirectory(
   rootPath: string,
   options: Omit<AnalyzerOptions, 'rootPath'> = {},
 ): Promise<AnalyzerResult> {
   const resolvedRoot = resolve(rootPath);
+  await validateRootPath(resolvedRoot);
+
   const { files, skippedFiles } = await scanDirectory(resolvedRoot, resolvedRoot, options);
   const filesByPath = new Map(files.map((f) => [f.relativePath, f]));
 
@@ -280,37 +383,7 @@ export async function analyzeTypeScriptDirectory(
     buildingByPath.set(file.relativePath, building);
   }
 
-  const roads: DependencyRoad[] = [];
-  const unresolvedImports: Array<{ sourcePath: string; specifier: string; kind: string }> = [];
-  for (const file of files) {
-    const source = buildingByPath.get(file.relativePath);
-    if (!source) continue;
-    for (const imp of file.imports) {
-      const resolved = resolveImportPath(file.relativePath, imp.specifier, filesByPath);
-      if (!resolved) {
-        if (isRelativeOrAbsolute(imp.specifier)) {
-          unresolvedImports.push({
-            sourcePath: file.relativePath,
-            specifier: imp.specifier,
-            kind: imp.kind,
-          });
-        }
-        continue;
-      }
-      const target = buildingByPath.get(resolved);
-      if (!target) continue;
-      roads.push({
-        id: `road:${source.id}->${target.id}:${imp.kind}`,
-        sourceBuildingId: source.id,
-        targetBuildingId: target.id,
-        kind: imp.kind,
-        weight: imp.weight,
-      });
-      source.importCount += 1;
-      target.importedByCount += 1;
-    }
-  }
-
+  const { roads, unresolvedImports } = buildRoads(files, buildingByPath, filesByPath);
   const buildings = Array.from(buildingByPath.values());
   repo.languages = Array.from(new Set(buildings.map((b) => b.language))).sort();
 
