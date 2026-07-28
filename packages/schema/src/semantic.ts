@@ -21,6 +21,34 @@ export function validateRepositoryWorldSemantic(world: RepositoryWorld): string[
     errors.push(`Root district must have id district:root, got ${rootDistricts[0].id}`);
   }
 
+  const parentByDistrict = new Map<string, string | null>();
+  for (const district of world.districts) {
+    parentByDistrict.set(district.id, district.parentId);
+  }
+
+  // Detect district parent cycles and unreachable districts.
+  for (const district of world.districts) {
+    const chain: string[] = [];
+    let currentId: string | null | undefined = district.id;
+    let cycleDetected = false;
+    while (currentId !== null && currentId !== undefined) {
+      if (chain.includes(currentId)) {
+        errors.push(`District parent cycle detected involving ${currentId}`);
+        cycleDetected = true;
+        break;
+      }
+      chain.push(currentId);
+      if (currentId === 'district:root') {
+        break;
+      }
+      currentId = parentByDistrict.get(currentId) ?? null;
+    }
+    if (!cycleDetected && currentId === null) {
+      errors.push(`District ${district.id} is not reachable from the root district`);
+    }
+  }
+
+  // Only the root district may be its own parent; all others must have a known parent.
   for (const district of world.districts) {
     if (district.id === 'district:root') continue;
     if (!district.parentId) {
@@ -45,7 +73,9 @@ export function validateRepositoryWorldSemantic(world: RepositoryWorld): string[
   }
 
   const roadIds = new Set<string>();
-  const sourceToTarget = new Map<string, Set<string>>();
+  const roadKeys = new Set<string>();
+  const importCountByBuilding = new Map<string, number>();
+  const importedByCountByBuilding = new Map<string, number>();
   for (const road of world.roads) {
     if (roadIds.has(road.id)) {
       errors.push(`Duplicate road id: ${road.id}`);
@@ -61,23 +91,34 @@ export function validateRepositoryWorldSemantic(world: RepositoryWorld): string[
     if (road.sourceBuildingId === road.targetBuildingId) {
       errors.push(`Road ${road.id} is a self-reference which is not supported`);
     }
-    if (!sourceToTarget.has(road.sourceBuildingId))
-      sourceToTarget.set(road.sourceBuildingId, new Set());
-    sourceToTarget.get(road.sourceBuildingId)?.add(road.targetBuildingId);
+
+    const key = `${road.sourceBuildingId}|${road.targetBuildingId}|${road.kind}`;
+    if (roadKeys.has(key)) {
+      errors.push(
+        `Duplicate road relationship ${road.sourceBuildingId} -> ${road.targetBuildingId} (${road.kind})`,
+      );
+    } else {
+      roadKeys.add(key);
+    }
+
+    importCountByBuilding.set(
+      road.sourceBuildingId,
+      (importCountByBuilding.get(road.sourceBuildingId) ?? 0) + 1,
+    );
+    importedByCountByBuilding.set(
+      road.targetBuildingId,
+      (importedByCountByBuilding.get(road.targetBuildingId) ?? 0) + 1,
+    );
   }
 
   for (const building of world.buildings) {
-    const expectedImportCount = world.roads.filter(
-      (r) => r.sourceBuildingId === building.id,
-    ).length;
+    const expectedImportCount = importCountByBuilding.get(building.id) ?? 0;
     if (building.importCount !== expectedImportCount) {
       errors.push(
         `Building ${building.id} importCount is ${building.importCount}, expected ${expectedImportCount}`,
       );
     }
-    const expectedImportedByCount = world.roads.filter(
-      (r) => r.targetBuildingId === building.id,
-    ).length;
+    const expectedImportedByCount = importedByCountByBuilding.get(building.id) ?? 0;
     if (building.importedByCount !== expectedImportedByCount) {
       errors.push(
         `Building ${building.id} importedByCount is ${building.importedByCount}, expected ${expectedImportedByCount}`,
@@ -103,6 +144,11 @@ export function validateRepositoryWorldSemantic(world: RepositoryWorld): string[
     );
   }
 
+  const roadKeysForCycles = new Set<string>();
+  for (const road of world.roads) {
+    roadKeysForCycles.add(`${road.sourceBuildingId}->${road.targetBuildingId}`);
+  }
+
   for (const group of world.metrics.circularDependencyGroups) {
     if (group.length < 2) {
       errors.push(`Cycle group has fewer than 2 entries: ${group.join(', ')}`);
@@ -117,6 +163,13 @@ export function validateRepositoryWorldSemantic(world: RepositoryWorld): string[
       errors.push(
         `Cycle group does not start and end with the same building: ${group.join(' -> ')}`,
       );
+    }
+    for (let i = 0; i < group.length - 1; i++) {
+      const from = group[i];
+      const to = group[i + 1];
+      if (!roadKeysForCycles.has(`${from}->${to}`)) {
+        errors.push(`Cycle group missing road from ${from} to ${to}`);
+      }
     }
   }
 
