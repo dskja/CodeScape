@@ -1,0 +1,27 @@
+{
+  "name": "codescape",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CodeScape visualizes software repositories as interactive 3D cities.",
+  "license": "Apache-2.0",
+  "author": "dskja <owner.vaultverse@gmail.com>",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "typecheck": "turbo run typecheck",
+    "lint": "biome check . && turbo run lint",
+    "format": "biome format --write .",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "check": "pnpm typecheck && pnpm lint && pnpm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.8.3",
+    "turbo": "^2.0.14",
+    "typescript": "^5.5.4"
+  },
+  "packageManager": "pnpm@9.6.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
