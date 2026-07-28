@@ -1,20 +1,36 @@
-import { readFile, readdir } from 'node:fs/promises';
-import { basename, dirname, extname, join, relative, resolve } from 'node:path';
+import type { Dirent } from 'node:fs';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import {
+  join,
+  basename as pathBasename,
+  extname as pathExtname,
+  relative,
+  resolve,
+} from 'node:path';
+import { dirname as posixDirname, join as posixJoin } from 'node:path/posix';
+import type { AnalyzerOptions, AnalyzerResult } from '@codescape/analyzer-core';
+import {
+  deriveDistricts,
+  detectCycles,
+  getLanguage,
+  normalizeRepositoryPath,
+  repositoryBasename,
+  repositoryDirname,
+  repositoryExtension,
+} from '@codescape/analyzer-core';
 import type {
   Building,
   DependencyRoad,
-  District,
   Repository,
   RepositoryMetrics,
   RepositoryWorld,
   RoadKind,
 } from '@codescape/schema';
+import * as ts from 'typescript';
 
-export interface ScannerOptions {
-  rootPath: string;
-  extensions?: string[];
-  exclude?: string[];
-}
+const DEFAULT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'out', 'coverage']);
+const SUPPORTED_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
 
 interface ParsedFile {
   absolutePath: string;
@@ -25,17 +41,17 @@ interface ParsedFile {
   linesOfCode: number;
   bytes: number;
   complexity: number;
+  mtime: Date;
   imports: Array<{ specifier: string; kind: RoadKind; weight: number }>;
 }
 
-const DEFAULT_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs'];
-const SKIP_DIRS = ['node_modules', '.git', 'dist', '.next', 'out', 'coverage'];
+interface ScanResult {
+  files: ParsedFile[];
+  skippedFiles: Array<{ path: string; reason: string }>;
+}
 
-function getLanguage(ext: string): string {
-  if (ext === 'ts' || ext === 'tsx' || ext === 'mts') return 'typescript';
-  if (ext === 'js' || ext === 'jsx' || ext === 'mjs') return 'javascript';
-  if (ext === 'md' || ext === 'mdx') return 'markdown';
-  return 'text';
+function toExtensionFormat(ext: string): string {
+  return ext.startsWith('.') ? ext : `.${ext}`;
 }
 
 function countLines(content: string): number {
@@ -47,77 +63,65 @@ function countComplexity(content: string): number {
   return matches ? matches.length : 0;
 }
 
-const IMPORT_RE =
-  /^\s*import\s+(?:type\s+)?(?:\*\s+as\s+\w+|\{[^}]*\}|\w+)?\s*(?:,\s*(?:\{[^}]*\}|\*\s+as\s+\w+))?\s*from\s*['"]([^'"]+)['"];?/gm;
-const DYNAMIC_IMPORT_RE = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-const REQUIRE_RE = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+function isRelativeOrAbsolute(specifier: string): boolean {
+  return specifier.startsWith('.') || specifier.startsWith('/');
+}
 
 function extractImports(
   content: string,
+  fileName: string,
 ): Array<{ specifier: string; kind: RoadKind; weight: number }> {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.Deferred,
+  );
   const imports: Array<{ specifier: string; kind: RoadKind; weight: number }> = [];
 
-  const staticMatches = content.matchAll(IMPORT_RE);
-  for (const match of staticMatches) {
-    const isType = /import\s+type\b/.test(match[0]);
-    imports.push({
-      specifier: match[1],
-      kind: isType ? 'type-import' : 'static-import',
-      weight: 1,
-    });
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node)) {
+      const moduleSpecifier = node.moduleSpecifier;
+      if (ts.isStringLiteral(moduleSpecifier)) {
+        const isTypeOnly = node.importClause?.isTypeOnly ?? false;
+        const kind: RoadKind = isTypeOnly ? 'type-import' : 'static-import';
+        imports.push({ specifier: moduleSpecifier.text, kind, weight: 1 });
+      }
+    } else if (ts.isExportDeclaration(node)) {
+      const moduleSpecifier = node.moduleSpecifier;
+      if (moduleSpecifier && ts.isStringLiteral(moduleSpecifier)) {
+        const kind: RoadKind = node.isTypeOnly ? 'type-import' : 'static-import';
+        imports.push({ specifier: moduleSpecifier.text, kind, weight: 1 });
+      }
+    } else if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      if (expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const argument = node.arguments[0];
+        if (argument && ts.isStringLiteral(argument)) {
+          imports.push({ specifier: argument.text, kind: 'dynamic-import', weight: 0.5 });
+        }
+      } else if (
+        ts.isIdentifier(expression) &&
+        expression.text === 'require' &&
+        node.arguments.length === 1
+      ) {
+        const argument = node.arguments[0];
+        if (argument && ts.isStringLiteral(argument)) {
+          imports.push({ specifier: argument.text, kind: 'require', weight: 1 });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
   }
 
-  const dynamicMatches = content.matchAll(DYNAMIC_IMPORT_RE);
-  for (const match of dynamicMatches) {
-    imports.push({ specifier: match[1], kind: 'dynamic-import', weight: 0.5 });
-  }
-
-  const requireMatches = content.matchAll(REQUIRE_RE);
-  for (const match of requireMatches) {
-    imports.push({ specifier: match[1], kind: 'require', weight: 1 });
-  }
-
+  visit(sourceFile);
   return imports;
 }
 
-async function scanDirectory(
-  rootPath: string,
-  current: string,
-  relativePrefix: string,
-  options: ScannerOptions,
-  files: ParsedFile[] = [],
-): Promise<ParsedFile[]> {
-  const entries = await readdir(current, { withFileTypes: true });
-  const exts = new Set(options.extensions ?? DEFAULT_EXTENSIONS);
-  const exclude = new Set(options.exclude ?? []);
-
-  for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue;
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.includes(entry.name) || exclude.has(entry.name)) continue;
-      await scanDirectory(rootPath, join(current, entry.name), relativePrefix, options, files);
-    } else if (entry.isFile()) {
-      const ext = extname(entry.name);
-      if (!exts.has(ext) && !entry.name.endsWith('.md')) continue;
-      const absolutePath = join(current, entry.name);
-      const relPath = relative(rootPath, absolutePath).replace(/\\/g, '/');
-      const content = await readFile(absolutePath, 'utf-8');
-      const extension = ext.slice(1);
-      files.push({
-        absolutePath,
-        relativePath: relPath,
-        content,
-        extension,
-        language: getLanguage(extension),
-        linesOfCode: countLines(content),
-        bytes: Buffer.byteLength(content, 'utf-8'),
-        complexity: countComplexity(content),
-        imports: extractImports(content),
-      });
-    }
-  }
-
-  return files;
+function toInternalPath(absolutePath: string, rootPath: string): string {
+  const rel = relative(rootPath, absolutePath).replace(/\\/g, '/');
+  return normalizeRepositoryPath(rel);
 }
 
 function resolveImportPath(
@@ -125,125 +129,145 @@ function resolveImportPath(
   specifier: string,
   filesByPath: Map<string, ParsedFile>,
 ): string | null {
-  if (!specifier.startsWith('.') && !specifier.startsWith('/')) return null;
+  if (!isRelativeOrAbsolute(specifier)) return null;
 
-  const baseDir = dirname(sourcePath);
-  let resolved: string;
+  const sourceDir = posixDirname(sourcePath);
+  let base: string;
   if (specifier.startsWith('/')) {
-    resolved = specifier.slice(1);
+    base = specifier.slice(1);
   } else {
-    resolved = join(baseDir, specifier).replace(/\\/g, '/');
+    base = posixJoin(sourceDir, specifier);
+  }
+  base = normalizeRepositoryPath(base);
+  if (base === '') return null;
+
+  const candidates: string[] = [base];
+  const existingExt = pathExtname(base);
+  if (existingExt !== '') {
+    const withoutExt = base.slice(0, -existingExt.length);
+    candidates.push(withoutExt);
   }
 
-  if (filesByPath.has(resolved)) return resolved;
-  for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mjs']) {
-    const withExt = `${resolved}${ext}`;
-    if (filesByPath.has(withExt)) return withExt;
-    const indexFile = `${resolved}/index${ext}`;
-    if (filesByPath.has(indexFile)) return indexFile;
+  for (const candidate of candidates) {
+    if (filesByPath.has(candidate)) return candidate;
+    for (const ext of SUPPORTED_EXTENSIONS) {
+      const withExt = `${candidate}${ext}`;
+      if (filesByPath.has(withExt)) return withExt;
+      const indexFile = `${candidate}/index${ext}`;
+      if (filesByPath.has(indexFile)) return indexFile;
+    }
   }
 
   return null;
 }
 
-function deriveDistricts(paths: string[]): District[] {
-  const dirSet = new Set<string>();
-  for (const p of paths) {
-    let dir = dirname(p);
-    while (dir !== '') {
-      dirSet.add(dir);
-      dir = dirname(dir);
+async function tryReadText(
+  absolutePath: string,
+): Promise<{ content: string; bytes: number; mtime: Date } | null> {
+  try {
+    const [stats, content] = await Promise.all([
+      stat(absolutePath),
+      readFile(absolutePath, 'utf-8'),
+    ]);
+    if (content.includes('\u0000')) {
+      return null;
     }
+    return { content, bytes: stats.size, mtime: stats.mtime };
+  } catch {
+    return null;
   }
-  const dirs = Array.from(dirSet).sort();
-  const byPath = new Map<string, District>();
-  const districts: District[] = [
-    { id: 'district:root', path: '', name: 'root', parentId: null, depth: 0 },
-  ];
-  for (const dir of dirs) {
-    const d: District = {
-      id: `district:${dir}`,
-      path: dir,
-      name: basename(dir),
-      parentId: dir === '' ? null : `district:${dirname(dir)}`,
-      depth: dir.split('/').filter(Boolean).length,
-    };
-    districts.push(d);
-    byPath.set(dir, d);
-  }
-  return districts;
 }
 
-function detectCycles(roads: DependencyRoad[]): string[][] {
-  const graph = new Map<string, Set<string>>();
-  for (const r of roads) {
-    if (!graph.has(r.sourceBuildingId)) graph.set(r.sourceBuildingId, new Set());
-    graph.get(r.sourceBuildingId)?.add(r.targetBuildingId);
+async function scanDirectory(
+  rootPath: string,
+  current: string,
+  options: Omit<AnalyzerOptions, 'rootPath'>,
+): Promise<ScanResult> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(current, { withFileTypes: true });
+  } catch {
+    return { files: [], skippedFiles: [] };
   }
 
-  const visited = new Set<string>();
-  const stack = new Set<string>();
-  const cycles: string[][] = [];
+  const allowedExtensions = options.extensions
+    ? new Set(options.extensions.map(toExtensionFormat))
+    : DEFAULT_EXTENSIONS;
+  const excludeSet = new Set(options.exclude ?? []);
+  const files: ParsedFile[] = [];
+  const skippedFiles: Array<{ path: string; reason: string }> = [];
 
-  function dfs(id: string, path: string[]): void {
-    visited.add(id);
-    stack.add(id);
-    path.push(id);
-    for (const next of graph.get(id) ?? []) {
-      if (stack.has(next)) {
-        const cycle = path.slice(path.indexOf(next));
-        cycles.push([...cycle, next]);
-      } else if (!visited.has(next)) {
-        dfs(next, path);
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    const childPath = join(current, entry.name);
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name) || excludeSet.has(entry.name)) continue;
+      const sub = await scanDirectory(rootPath, childPath, options);
+      files.push(...sub.files);
+      skippedFiles.push(...sub.skippedFiles);
+    } else if (entry.isFile()) {
+      const ext = pathExtname(entry.name);
+      if (!allowedExtensions.has(ext)) continue;
+      const readResult = await tryReadText(childPath);
+      if (!readResult) {
+        skippedFiles.push({
+          path: toInternalPath(childPath, rootPath),
+          reason: 'not a readable UTF-8 text file',
+        });
+        continue;
       }
-    }
-    stack.delete(id);
-    path.pop();
-  }
-
-  for (const id of graph.keys()) {
-    if (!visited.has(id)) dfs(id, []);
-  }
-
-  const seen = new Set<string>();
-  const unique: string[][] = [];
-  for (const c of cycles) {
-    const normalized = [...c].sort().join(',');
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      unique.push(c);
+      const internalPath = toInternalPath(childPath, rootPath);
+      const extension = repositoryExtension(entry.name);
+      files.push({
+        absolutePath: childPath,
+        relativePath: internalPath,
+        content: readResult.content,
+        extension,
+        language: getLanguage(extension),
+        linesOfCode: countLines(readResult.content),
+        bytes: readResult.bytes,
+        complexity: countComplexity(readResult.content),
+        mtime: readResult.mtime,
+        imports: extractImports(readResult.content, entry.name),
+      });
     }
   }
-  return unique;
+
+  return { files, skippedFiles };
 }
 
-export async function analyzeTypeScriptDirectory(rootPath: string): Promise<RepositoryWorld> {
+export async function analyzeTypeScriptDirectory(
+  rootPath: string,
+  options: Omit<AnalyzerOptions, 'rootPath'> = {},
+): Promise<AnalyzerResult> {
   const resolvedRoot = resolve(rootPath);
-  const files = await scanDirectory(resolvedRoot, resolvedRoot, '', { rootPath: resolvedRoot });
+  const { files, skippedFiles } = await scanDirectory(resolvedRoot, resolvedRoot, options);
   const filesByPath = new Map(files.map((f) => [f.relativePath, f]));
 
-  const buildingByPath = new Map<string, Building>();
   const pathList = files.map((f) => f.relativePath).sort();
   const districts = deriveDistricts(pathList);
   const districtByPath = new Map(districts.map((d) => [d.path, d]));
 
-  const now = new Date().toISOString();
+  const analyzedAt = new Date().toISOString();
   const repo: Repository = {
-    name: basename(resolvedRoot),
+    name: pathBasename(resolvedRoot),
     rootPath: resolvedRoot,
-    analyzedAt: now,
+    analyzedAt,
     languages: [],
   };
 
+  const buildingByPath = new Map<string, Building>();
   for (const file of files) {
-    const dir = dirname(file.relativePath);
+    const dir = repositoryDirname(file.relativePath);
     const district = districtByPath.get(dir);
-    if (!district) throw new Error(`Missing district for ${file.relativePath}`);
+    if (!district) {
+      continue;
+    }
     const building: Building = {
       id: `building:${file.relativePath}`,
       districtId: district.id,
       path: file.relativePath,
-      name: basename(file.relativePath),
+      name: repositoryBasename(file.relativePath),
       extension: file.extension,
       language: file.language,
       linesOfCode: file.linesOfCode,
@@ -251,18 +275,28 @@ export async function analyzeTypeScriptDirectory(rootPath: string): Promise<Repo
       complexity: file.complexity,
       importCount: 0,
       importedByCount: 0,
-      lastModifiedAt: now,
+      lastModifiedAt: file.mtime.toISOString(),
     };
     buildingByPath.set(file.relativePath, building);
   }
 
   const roads: DependencyRoad[] = [];
+  const unresolvedImports: Array<{ sourcePath: string; specifier: string; kind: string }> = [];
   for (const file of files) {
     const source = buildingByPath.get(file.relativePath);
     if (!source) continue;
     for (const imp of file.imports) {
       const resolved = resolveImportPath(file.relativePath, imp.specifier, filesByPath);
-      if (!resolved) continue;
+      if (!resolved) {
+        if (isRelativeOrAbsolute(imp.specifier)) {
+          unresolvedImports.push({
+            sourcePath: file.relativePath,
+            specifier: imp.specifier,
+            kind: imp.kind,
+          });
+        }
+        continue;
+      }
       const target = buildingByPath.get(resolved);
       if (!target) continue;
       roads.push({
@@ -288,12 +322,20 @@ export async function analyzeTypeScriptDirectory(rootPath: string): Promise<Repo
     circularDependencyGroups: detectCycles(roads),
   };
 
-  return {
+  const world: RepositoryWorld = {
     schemaVersion: 1,
     repository: repo,
     districts,
     buildings,
     roads,
     metrics,
+  };
+
+  return {
+    world,
+    report: {
+      unresolvedImports,
+      skippedFiles,
+    },
   };
 }

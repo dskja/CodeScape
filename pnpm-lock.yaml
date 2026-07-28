@@ -107,19 +107,22 @@ importers:
       '@codescape/schema':
         specifier: workspace:*
         version: link:../schema
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
     devDependencies:
       '@types/node':
         specifier: ^20.14.14
         version: 20.19.43
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
       vitest:
         specifier: ^2.0.5
         version: 2.1.9(@types/node@20.19.43)
 
   packages/fixtures:
     dependencies:
+      '@codescape/analyzer-core':
+        specifier: workspace:*
+        version: link:../analyzer-core
       '@codescape/schema':
         specifier: workspace:*
         version: link:../schema

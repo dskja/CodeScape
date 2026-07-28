@@ -19,6 +19,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@codescape/analyzer-core": "workspace:*",
     "@codescape/schema": "workspace:*"
   },
   "devDependencies": {

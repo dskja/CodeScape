@@ -51,7 +51,7 @@ function footprintFromBytes(bytes: number, scale: number): number {
 
 function heightFromLines(lines: number, scale: number): number {
   const raw = Math.log(lines + 1) * scale;
-  return Math.max(0.25, raw);
+  return Math.max(0.25, Math.min(raw, 20));
 }
 
 function sortByName<T extends { id: string }>(items: T[]): T[] {
